@@ -8,7 +8,7 @@ use nockchain_bitcoin_sync::{BitcoinRPCConnection, BitcoinWatcher};
 async fn main() -> Result<(), Box<dyn Error>> {
     let block: u64 = args().collect::<Vec<_>>()[1].parse()?;
     let connection = BitcoinRPCConnection::new(
-        "http://127.0.0.1:8332".to_string(),
+        "https://go.getblock.io/b5521419135d4cb5ae64e2508f8cd883".to_string(),
         /*
         Auth::CookieFile(PathBuf::from(
             "cookiefile",
