@@ -2,7 +2,8 @@
 
 use std::{str::FromStr, sync::Arc, path::PathBuf, thread};
 use tempfile::TempDir;
-use tokio::{runtime::Runtime, sync::oneshot};
+use tokio::runtime::{Builder, Runtime};
+use tokio::sync::oneshot;
 use tracing::{instrument, warn};
 use once_cell::sync::OnceCell;
 use num_cpus;
@@ -14,7 +15,7 @@ use nockapp::nockapp::driver::{IODriverFn, NockAppHandle, PokeResult};
 use nockapp::nockapp::wire::Wire;
 use nockapp::nockapp::NockAppError;
 use nockapp::noun::{AtomExt, slab::NounSlab};
-use nockapp::NounExt;  // brings eq_bytes into scope
+use nockapp::NounExt;                // for eq_bytes
 use nockvm::noun::{Atom, D, T};
 use nockvm_macros::tas;
 use zkvm_jetpack::hot::produce_prover_hot_state;
@@ -25,29 +26,28 @@ use zkvm_jetpack::hot::produce_prover_hot_state;
 static SNAPSHOT_DIR: OnceCell<Arc<TempDir>> = OnceCell::new();
 static STARK_KERNEL: OnceCell<Arc<Kernel>>  = OnceCell::new();
 
-/// Load & cache the TempDir + STARK kernel (with a single hot-state)
+/// Async init of snapshot dir & STARK kernel
 async fn init_engine() -> Arc<Kernel> {
     let snap = SNAPSHOT_DIR
         .get_or_init(|| Arc::new(TempDir::new().expect("failed to create snapshot dir")))
         .clone();
 
-    STARK_KERNEL
-        .get_or_init(|| {
-            // run only once
-            let path: PathBuf = snap.path().into();
-            let jams = JamPaths::new(snap.path());
-            let k = tokio::runtime::Handle::current().block_on(async {
-                let hot = produce_prover_hot_state();
-                Kernel::load_with_hot_state_huge(path, jams, KERNEL, &hot, false)
-                    .await
-                    .expect("kernel load failed")
-            });
-            Arc::new(k)
-        })
-        .clone()
+    if let Some(k) = STARK_KERNEL.get() {
+        return k.clone();
+    }
+
+    let path: PathBuf = snap.path().into();
+    let jams = JamPaths::new(snap.path());
+    let hot   = produce_prover_hot_state();
+    let kernel = Kernel::load_with_hot_state_huge(path, jams, KERNEL, &hot, false)
+        .await
+        .expect("kernel load failed");
+    let arc_k = Arc::new(kernel);
+    STARK_KERNEL.set(arc_k.clone()).expect("kernel set only once");
+    arc_k
 }
 
-/// Builds the I/O driver for mining
+/// Builds the mining I/O driver function
 pub fn create_mining_driver(
     mining_config: Option<Vec<MiningKeyConfig>>,
     mine: bool,
@@ -55,10 +55,10 @@ pub fn create_mining_driver(
 ) -> IODriverFn {
     Box::new(move |mut handle| {
         Box::pin(async move {
-            // 1) Init kernel & snapshot
+            // 1) initialize kernel & snapshot
             let kernel = init_engine().await;
 
-            // 2) Configure pubkey(s) or disable
+            // 2) configure mining key(s) or disable
             if let Some(cfgs) = &mining_config {
                 if cfgs.len() == 1
                     && cfgs[0].share == 1
@@ -73,7 +73,7 @@ pub fn create_mining_driver(
                 enable_mining(&handle, false).await?;
             }
 
-            // 3) Notify init complete
+            // 3) signal init complete
             if let Some(tx) = init_complete_tx {
                 tx.send(()).map_err(|_| {
                     warn!("init tx failed");
@@ -81,13 +81,13 @@ pub fn create_mining_driver(
                 })?;
             }
 
-            // 4) If not mining, exit
+            // 4) if not mining, exit
             if !mine {
                 return Ok(());
             }
             enable_mining(&handle, true).await?;
 
-            // 5) Main loop: every time we get `(mine …)`, spawn one thread per core
+            // 5) main loop: spawn one thread per core on each mine-effect
             loop {
                 let effect = match handle.next_effect().await {
                     Ok(e) => e,
@@ -96,26 +96,24 @@ pub fn create_mining_driver(
                         continue;
                     }
                 };
-
                 if let Ok(cell) = unsafe { effect.root().as_cell() } {
                     if cell.head().eq_bytes("mine") {
-                        // raw candidate bytes
-                        let tail = cell.tail();
-                        // how many workers?
-                        let cores = num_cpus::get();
+                        let tail   = cell.tail();
+                        let cores  = num_cpus::get();
                         for _ in 0..cores {
-                            // build a fresh NounSlab for each thread
                             let mut slab = NounSlab::new();
                             slab.copy_into(tail);
 
-                            // split the handle once per thread
+                            // split handle for each thread
                             let (new_listener, poke_handle) = handle.dup();
                             handle = new_listener;
                             let kernel_clone = kernel.clone();
 
-                            // spawn the OS thread
                             thread::spawn(move || {
-                                let rt = Runtime::new().expect("failed to create tokio runtime");
+                                let rt = Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .unwrap();
                                 rt.block_on(async move {
                                     mining_attempt(slab, poke_handle, kernel_clone).await;
                                 });
@@ -128,7 +126,7 @@ pub fn create_mining_driver(
     })
 }
 
-/// Performs one proof attempt and pokes any valid result back
+/// Execute one proof attempt
 pub async fn mining_attempt(
     candidate: NounSlab,
     handle:    NockAppHandle,
@@ -156,10 +154,10 @@ async fn set_mining_key(
     handle: &NockAppHandle,
     pubkey: String,
 ) -> Result<PokeResult, NockAppError> {
-    let mut slab = NounSlab::new();
-    let cmd  = Atom::from_value(&mut slab, "set-mining-key").unwrap();
-    let pk   = Atom::from_value(&mut slab, pubkey).unwrap();
-    let poke = T(&mut slab, &[D(tas!(b"command")), cmd.as_noun(), pk.as_noun()]);
+    let mut slab  = NounSlab::new();
+    let cmd       = Atom::from_value(&mut slab, "set-mining-key").unwrap();
+    let pk        = Atom::from_value(&mut slab, pubkey).unwrap();
+    let poke      = T(&mut slab, &[D(tas!(b"command")), cmd.as_noun(), pk.as_noun()]);
     slab.set_root(poke);
     handle.poke(MiningWire::SetPubKey.to_wire(), slab).await
 }
@@ -168,21 +166,21 @@ async fn set_mining_key_advanced(
     handle:  &NockAppHandle,
     configs: Vec<MiningKeyConfig>,
 ) -> Result<PokeResult, NockAppError> {
-    let mut slab   = NounSlab::new();
-    let cmd_adv    = Atom::from_value(&mut slab, "set-mining-key-advanced").unwrap();
-    let mut list_n = D(0);
+    let mut slab  = NounSlab::new();
+    let cmd_adv   = Atom::from_value(&mut slab, "set-mining-key-advanced").unwrap();
+    let mut list  = D(0);
 
     for cfg in configs {
-        let mut key_list = D(0);
+        let mut keys = D(0);
         for k in cfg.keys {
             let a = Atom::from_value(&mut slab, k).unwrap();
-            key_list = T(&mut slab, &[a.as_noun(), key_list]);
+            keys = T(&mut slab, &[a.as_noun(), keys]);
         }
-        let tup  = T(&mut slab, &[D(cfg.share), D(cfg.m), key_list]);
-        list_n   = T(&mut slab, &[tup, list_n]);
+        let tup   = T(&mut slab, &[D(cfg.share), D(cfg.m), keys]);
+        list       = T(&mut slab, &[tup, list]);
     }
 
-    let poke = T(&mut slab, &[D(tas!(b"command")), cmd_adv.as_noun(), list_n]);
+    let poke = T(&mut slab, &[D(tas!(b"command")), cmd_adv.as_noun(), list]);
     slab.set_root(poke);
     handle.poke(MiningWire::SetPubKey.to_wire(), slab).await
 }
@@ -192,10 +190,10 @@ async fn enable_mining(
     handle: &NockAppHandle,
     enable: bool,
 ) -> Result<PokeResult, NockAppError> {
-    let mut slab = NounSlab::new();
-    let cmd      = Atom::from_value(&mut slab, "enable-mining").unwrap();
-    let flag     = if enable { 0 } else { 1 };
-    let poke     = T(&mut slab, &[D(tas!(b"command")), cmd.as_noun(), D(flag)]);
+    let mut slab  = NounSlab::new();
+    let cmd       = Atom::from_value(&mut slab, "enable-mining").unwrap();
+    let flag      = if enable { 0 } else { 1 };
+    let poke      = T(&mut slab, &[D(tas!(b"command")), cmd.as_noun(), D(flag)]);
     slab.set_root(poke);
     handle.poke(MiningWire::Enable.to_wire(), slab).await
 }
@@ -209,7 +207,6 @@ pub struct MiningKeyConfig {
 
 impl FromStr for MiningKeyConfig {
     type Err = String;
-
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 2 {
@@ -251,7 +248,6 @@ impl MiningWire {
 impl Wire for MiningWire {
     const VERSION: u64         = 1;
     const SOURCE:  &'static str = "miner";
-
     fn to_wire(&self) -> nockapp::wire::WireRepr {
         let tags = vec![self.verb().into()];
         nockapp::wire::WireRepr::new(Self::SOURCE, Self::VERSION, tags)
