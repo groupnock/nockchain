@@ -3,14 +3,14 @@ use std::str::FromStr;
 use rayon::prelude::*;
 use tokio::sync::{mpsc, Semaphore};
 use thiserror::Error;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use nockapp::nockapp::driver::{IODriverFn, NockAppHandle, PokeResult};
 use nockapp::nockapp::wire::{Wire, WireRepr};
 use nockapp::nockapp::NockAppError;
 use nockapp::noun::slab::NounSlab;
-use nockapp::noun::{AtomExt, Noun, NounExt};
-use nockvm::noun::{Atom, D, T};
+use nockapp::noun::{AtomExt, NounExt};
+use nockvm::noun::{Atom, D, T, Noun};
 use nockvm_macros::tas;
 
 #[derive(Debug, Error)]
@@ -167,7 +167,7 @@ async fn set_mining_key_advanced(
 
     let configs_list = configs.iter().rev().try_fold(D(0), |acc, config| {
         let keys = config.keys.iter().rev().try_fold(D(0), |keys_acc, key| {
-            Atom::from_value(&mut slab, key)
+            Atom::from_value(&mut slab, key.as_str())
                 .map(|k| T(&mut slab, &[k.as_noun(), keys_acc]))
                 .map_err(|_| MiningError::NounConstruction)
         })?;
@@ -231,7 +231,7 @@ async fn mine_candidate(
                 let hash = blake3::hash(&[
                     &nonce.to_be_bytes(),
                     &candidate.block_number.to_be_bytes(),
-                    &candidate.parent_hash,
+                    &candidate.parent_hash[..],
                 ].concat());
 
                 if u64::from_be_bytes(hash.as_bytes()[0..8].try_into().unwrap()) < candidate.difficulty {
@@ -274,7 +274,7 @@ async fn submit_solution(
 }
 
 fn handle_mining_effect(
-    handle: NockAppHandle,
+    handle: Arc<NockAppHandle>,
     effect: Noun,
     tasks: &mut tokio::task::JoinSet<Result<(), MiningError>>,
 ) -> Result<(), NockAppError> {
@@ -293,7 +293,7 @@ fn handle_mining_effect(
         };
 
         tasks.spawn(async move {
-            mine_candidate(handle, candidate).await
+            mine_candidate(Arc::clone(&handle), candidate).await
         });
     }
     
@@ -307,6 +307,7 @@ pub fn create_mining_driver(
 ) -> IODriverFn {
     Box::new(move |handle| {
         Box::pin(async move {
+            let handle = Arc::new(handle);
             let Some(configs) = mining_config.as_deref() else {
                 enable_mining(&handle, false).await.map_err(|e| {
                     error!("Disabling mining failed: {:?}", e);
@@ -354,7 +355,7 @@ pub fn create_mining_driver(
                 tokio::select! {
                     effect_res = handle.next_effect() => {
                         match effect_res {
-                            Ok(effect) => handle_mining_effect(handle.clone(), effect, &mut tasks)?,
+                            Ok(effect) => handle_mining_effect(Arc::clone(&handle), effect, &mut tasks)?,
                             Err(e) => {
                                 warn!("Error receiving effect: {:?}", e);
                                 continue;
