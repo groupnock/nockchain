@@ -185,7 +185,7 @@ pub fn create_mining_driver(
             }
 
             // 3) Split handle into listener + poke_handle
-            let (mut listener, poke_handle) = handle.dup();
+            let (listener, poke_handle) = handle.dup();
 
             // 4) Channel for block candidates
             let (cand_tx, cand_rx) = mpsc::channel::<NounSlab>(MAX_MINING_THREADS);
