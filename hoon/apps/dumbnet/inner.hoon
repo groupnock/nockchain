@@ -683,15 +683,15 @@
     ++  handle-command
       |=  [now=@da =command:dk]
       ^-  [(list effect:dk) kernel-state:dk]
-      ~>  %slog.[0 (cat 3 'command: ' -.command)]
+      ~>  %slog.[3 (cat 3 'command: ' -.command)]
       ::  ~&  "handling command: {<-.command>}"
       ?:  &(?=(init-command:dk -.command) !init.a.k)
         ::  kernel no longer in init phase, can't do init command
-        ~>  %slog.[0 leaf+"kernel no longer in init phase, can't do init command"]
+        ~>  %slog.[3 leaf+"kernel no longer in init phase, can't do init command"]
         `k
       ?:  &(?=(non-init-command:dk -.command) init.a.k)
         ::  kernel in init phase, can't perform command
-        ~>  %slog.[0 leaf+"kernel is in init phase, can't do non-init command"]
+        ~>  %slog.[3 leaf+"kernel is in init phase, can't do non-init command"]
         `k
       |^
       ?-  -.command
@@ -889,7 +889,7 @@
     ++  handle-fact
       |=  [wir=wire eny=@ our=@ux now=@da =fact:dk]
       ^-  [(list effect:dk) kernel-state:dk]
-      ~>  %slog.[0 (cat 3 'fact: ' +<.fact)]
+      ~>  %slog.[3 (cat 3 'fact: ' +<.fact)]
       ?:  init.a.k
         ::  kernel in init phase, fact ignored
         `k

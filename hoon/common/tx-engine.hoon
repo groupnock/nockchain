@@ -1612,11 +1612,17 @@
       %|
     %+  levy  ~(tap z-by form)
     |=  [=lock =coins]
-    ~&  :*  %based-split-check
-            coins-not-zero+!=(0 coins)
-            coins-based+(^based coins)
-            lock-based+(based:^lock lock)
-        ==
+    =/  based-print
+      ;:  (cury cat 3)
+        'based-split-check: '
+        'coin-not-zero: '
+        ?:(!=(0 coins) 'yes' 'no')
+        ' coins-based: '
+        ?:((^based coins) 'yes' 'no')
+        ' lock-based: '
+        ?:((based:^lock lock) 'yes' 'no')
+      ==
+    ~>  %slog.[3 based-print]
     ?&  !=(0 coins)
         (^based coins)
         (based:^lock lock)

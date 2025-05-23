@@ -229,7 +229,7 @@ pub fn make_libp2p_driver(
                                 tracker.remove_peer(&peer_id);
                             },
                             SwarmEvent::IncomingConnectionError { local_addr, send_back_addr, error, .. } => {
-                               error!("SEvent: Failed incoming connection from {} to {}: {}",
+                               trace!("SEvent: Failed incoming connection from {} to {}: {}",
                                send_back_addr, local_addr, error);
                             },
                             SwarmEvent::Behaviour(NockchainEvent::RequestResponse(Message { connection_id: _, peer, message })) => {
@@ -248,7 +248,7 @@ pub fn make_libp2p_driver(
                                 });
                             },
                             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                                error!("Failed outgoing connection to {:?}: {}", peer_id, error);
+                                trace!("Failed outgoing connection to {:?}: {}", peer_id, error);
                             },
                             SwarmEvent::IncomingConnection {
                                 local_addr,
