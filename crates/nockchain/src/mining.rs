@@ -1,16 +1,12 @@
 // crates/nockchain/src/mining.rs
 
-use std::{
-    str::FromStr,
-    sync::Arc,
-    path::PathBuf,
-    thread,
-};
+use std::{str::FromStr, sync::Arc, path::PathBuf, thread};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tracing::{instrument, warn};
 use once_cell::sync::OnceCell;
+use num_cpus;
 
 use kernels::miner::KERNEL;
 use nockapp::kernel::checkpoint::JamPaths;
@@ -19,19 +15,21 @@ use nockapp::nockapp::driver::{IODriverFn, NockAppHandle, PokeResult};
 use nockapp::nockapp::wire::Wire;
 use nockapp::nockapp::NockAppError;
 use nockapp::noun::{AtomExt, slab::NounSlab};
-use nockapp::NounExt;                          // <- bring eq_bytes into scope
+use nockapp::NounExt;                          // for eq_bytes
 use nockvm::noun::{Atom, D, T};
 use nockvm_macros::tas;
-use zkvm_jetpack::hot::produce_prover_hot_state; // <- just the function
+use zkvm_jetpack::hot::produce_prover_hot_state;
 
-// only cache the snapshot dir & the loaded kernel
+// ————————————————
+// Global caches for snapshot dir & kernel
+// ————————————————
 static SNAPSHOT_DIR: OnceCell<Arc<TempDir>> = OnceCell::new();
 static STARK_KERNEL: OnceCell<Arc<Kernel>>  = OnceCell::new();
 
-/// Init (once) the tempdir + STARK kernel (with a single hot-state call)
+/// Initialize (once) the TempDir and the STARK kernel
 async fn init_engine() -> Arc<Kernel> {
     let snap = SNAPSHOT_DIR
-        .get_or_init(|| Arc::new(TempDir::new().expect("tmpdir failed")))
+        .get_or_init(|| Arc::new(TempDir::new().expect("failed to create snapshot dir")))
         .clone();
 
     STARK_KERNEL
@@ -50,6 +48,7 @@ async fn init_engine() -> Arc<Kernel> {
         .clone()
 }
 
+/// Creates the I/O driver function for mining
 pub fn create_mining_driver(
     mining_config: Option<Vec<MiningKeyConfig>>,
     mine: bool,
@@ -57,9 +56,10 @@ pub fn create_mining_driver(
 ) -> IODriverFn {
     Box::new(move |mut handle| {
         Box::pin(async move {
+            // 1) Initialize kernel & snapshot dir (once)
             let kernel = init_engine().await;
 
-            // configure pubkey(s) or disable mining
+            // 2) Configure mining key(s) or disable mining
             if let Some(cfgs) = &mining_config {
                 if cfgs.len() == 1
                     && cfgs[0].share == 1
@@ -74,6 +74,7 @@ pub fn create_mining_driver(
                 enable_mining(&handle, false).await?;
             }
 
+            // 3) Signal initialization complete
             if let Some(tx) = init_complete_tx {
                 tx.send(()).map_err(|_| {
                     warn!("init tx failed");
@@ -81,11 +82,13 @@ pub fn create_mining_driver(
                 })?;
             }
 
+            // 4) If mining is disabled, return early
             if !mine {
                 return Ok(());
             }
             enable_mining(&handle, true).await?;
 
+            // 5) Main loop: for every `(mine …)` effect, spawn one thread per core
             loop {
                 let effect = match handle.next_effect().await {
                     Ok(e) => e,
@@ -95,22 +98,30 @@ pub fn create_mining_driver(
                     }
                 };
 
-                // on every `(mine …)` effect, spawn an OS thread
                 if let Ok(cell) = unsafe { effect.root().as_cell() } {
                     if cell.head().eq_bytes("mine") {
-                        let mut slab = NounSlab::new();
-                        slab.copy_into(cell.tail());
+                        // get the raw candidate tail
+                        let tail = cell.tail();
+                        // spawn one proof thread per logical core
+                        let workers = num_cpus::get();
+                        for _ in 0..workers {
+                            // rebuild the slab for this thread
+                            let mut slab = NounSlab::new();
+                            slab.copy_into(tail);
 
-                        let (new_listener, poke_handle) = handle.dup();
-                        handle = new_listener;
-                        let kernel_clone = kernel.clone();
+                            // split handle for concurrent pokes
+                            let (new_listener, poke_handle) = handle.dup();
+                            handle = new_listener;
+                            let kernel_clone = kernel.clone();
 
-                        thread::spawn(move || {
-                            let rt = Runtime::new().expect("rt init failed");
-                            rt.block_on(async {
-                                mining_attempt(slab, poke_handle, kernel_clone).await;
+                            thread::spawn(move || {
+                                // each thread gets its own Tokio runtime
+                                let rt = Runtime::new().expect("failed to create runtime");
+                                rt.block_on(async {
+                                    mining_attempt(slab, poke_handle, kernel_clone).await;
+                                });
                             });
-                        });
+                        }
                     }
                 }
             }
@@ -118,6 +129,7 @@ pub fn create_mining_driver(
     })
 }
 
+/// Performs a single mining attempt using the cached kernel
 pub async fn mining_attempt(
     candidate: NounSlab,
     handle:    NockAppHandle,
