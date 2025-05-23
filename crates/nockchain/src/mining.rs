@@ -14,7 +14,7 @@ use tokio::{
     sync::{oneshot, mpsc, Mutex},
     time::timeout,
 };
-use tracing::{instrument, info, warn};
+use tracing::{instrument, info};
 use once_cell::sync::{Lazy, OnceCell};
 use num_cpus;
 use futures::executor;  // for block_on in OS threads
@@ -208,7 +208,7 @@ pub fn create_mining_driver(
             }
 
             // 7) Driver event loop: handle candidate pokes
-            let mut listener = listener;
+            let listener = listener;
             loop {
                 let effect = listener.next_effect().await?;
                 if let Ok(cell) = unsafe { effect.root().as_cell() } {
@@ -266,7 +266,7 @@ fn start_mining_threads(
                         if let Some(cand) = maybe {
                             let _ = attempt_mining_cycle(&thread_handle, &kernel, cand).await;
                         }
-                        tokio::time::sleep(Duration::from_millis(MINING_RETRY_DELAY_MS)).await;
+                        executor::block_on(tokio::time::sleep(Duration::from_millis(MINING_RETRY_DELAY_MS)));
                     }
                 });
             })
