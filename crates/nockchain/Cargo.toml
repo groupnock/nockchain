@@ -33,20 +33,11 @@ libp2p = { workspace = true, features = [
 nockchain-libp2p-io.workspace = true
 tempfile = { workspace = true }
 termcolor.workspace = true
-tokio = { workspace = true, features = ["full", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-test.workspace = true
-
+uuid.workspace = true
 zkvm-jetpack.workspace = true
-
-# Mining-specific dependencies
-rayon = "1.8"
-blake3 = "1.5"
-once_cell = "1.18"
-num_cpus = "1.16.0"
-thiserror = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-
 [build-dependencies]
 vergen = { workspace = true, features = [
     "build",
