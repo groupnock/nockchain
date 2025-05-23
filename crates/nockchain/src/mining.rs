@@ -10,7 +10,7 @@ use nockapp::nockapp::wire::{Wire, WireRepr};
 use nockapp::nockapp::NockAppError;
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::{AtomExt, NounExt};
-use nockvm::noun::{Atom, D, T, Noun};
+use nockvm::noun::{Atom, Cell, D, T, Noun};
 use nockvm_macros::tas;
 
 #[derive(Debug, Error)]
@@ -120,11 +120,11 @@ struct MiningCandidate {
 
 impl MiningCandidate {
     fn from_noun(noun: Noun) -> Result<Self, MiningError> {
-        let cell = noun.as_cell().ok_or(MiningError::MiningFailure)?;
-        let block_num_atom = cell.head().as_atom().ok_or(MiningError::MiningFailure)?;
-        let tail_cell = cell.tail().as_cell().ok_or(MiningError::MiningFailure)?;
-        let difficulty_atom = tail_cell.head().as_atom().ok_or(MiningError::MiningFailure)?;
-        let parent_hash_atom = tail_cell.tail().as_atom().ok_or(MiningError::MiningFailure)?;
+        let cell = noun.as_cell().map_err(|_| MiningError::MiningFailure)?;
+        let block_num_atom = cell.head().as_atom().map_err(|_| MiningError::MiningFailure)?;
+        let tail_cell = cell.tail().as_cell().map_err(|_| MiningError::MiningFailure)?;
+        let difficulty_atom = tail_cell.head().as_atom().map_err(|_| MiningError::MiningFailure)?;
+        let parent_hash_atom = tail_cell.tail().as_atom().map_err(|_| MiningError::MiningFailure)?;
 
         Ok(MiningCandidate {
             block_number: block_num_atom.as_u64(),
@@ -278,7 +278,7 @@ fn handle_mining_effect(
     effect: Noun,
     tasks: &mut tokio::task::JoinSet<Result<(), MiningError>>,
 ) -> Result<(), NockAppError> {
-    let effect_cell = effect.as_cell().ok_or_else(|| {
+    let effect_cell = effect.as_cell().map_err(|_| {
         error!("Received non-cell effect");
         NockAppError::OtherError
     })?;
@@ -293,7 +293,7 @@ fn handle_mining_effect(
         };
 
         tasks.spawn(async move {
-            mine_candidate(Arc::clone(&handle), candidate).await
+            mine_candidate(handle.as_ref().clone(), candidate).await
         });
     }
     
@@ -355,7 +355,10 @@ pub fn create_mining_driver(
                 tokio::select! {
                     effect_res = handle.next_effect() => {
                         match effect_res {
-                            Ok(effect) => handle_mining_effect(Arc::clone(&handle), effect, &mut tasks)?,
+                            Ok(effect_slab) => {
+                                let effect_noun = effect_slab.root();
+                                handle_mining_effect(Arc::clone(&handle), effect_noun, &mut tasks)?
+                            },
                             Err(e) => {
                                 warn!("Error receiving effect: {:?}", e);
                                 continue;
