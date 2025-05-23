@@ -1,17 +1,15 @@
 [workspace]
 members = [
-    "crates/nockchain",
-    # add other crates if needed
+    "crates/nockchain"
 ]
 
 [workspace.dependencies]
 uuid = "1.8"
-# also add any other missing dependencies from your inner crate
 tempfile = "3"
 tracing = "0.1"
 tokio = { version = "1", features = ["full"] }
-hoonc = { path = "crates/hoonc" } # if it's a local crate
-kernels = { path = "crates/kernels" } # adjust as needed
+hoonc = { path = "crates/hoonc" }
+kernels = { path = "crates/kernels" }
 nockapp = { path = "crates/nockapp" }
 nockvm = { path = "crates/nockvm" }
 nockvm_macros = { path = "crates/nockvm_macros" }
