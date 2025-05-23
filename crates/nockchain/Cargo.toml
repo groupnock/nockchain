@@ -5,13 +5,6 @@ publish = false
 version.workspace = true
 edition.workspace = true
 
-[package]
-name = "nockchain"
-build = "build.rs"
-publish = false
-version.workspace = true
-edition.workspace = true
-
 [dependencies]
 hoonc.workspace = true
 kernels = { workspace = true, features = ["dumb", "miner"] }
