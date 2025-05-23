@@ -11,13 +11,13 @@ use std::{
 };
 use tempfile::TempDir;
 use tokio::{
-    runtime::Runtime,
     sync::{oneshot, mpsc, Mutex},
     time::timeout,
 };
 use tracing::{instrument, info, warn};
 use once_cell::sync::{Lazy, OnceCell};
 use num_cpus;
+use futures::executor;  // for block_on in OS threads
 
 use kernels::miner::KERNEL;
 use nockapp::{
@@ -48,7 +48,7 @@ static MINING_ACTIVE: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::
 
 // One-time caches for snapshot dir & loaded kernel
 static SNAPSHOT_DIR: OnceCell<Arc<TempDir>> = OnceCell::new();
-static STARK_KERNEL: OnceCell<Arc<Kernel>>   = OnceCell::new();
+static STARK_KERNEL:   OnceCell<Arc<Kernel>>   = OnceCell::new();
 
 // —————————————————————————————————————————————————————————————————————
 // Mining configuration type
@@ -145,9 +145,15 @@ async fn init_engine() -> Result<Arc<Kernel>, NockAppError> {
 
     let jams   = JamPaths::new(snap.path());
     let hot    = produce_prover_hot_state();
-    let kernel = Kernel::load_with_hot_state_huge(snap.path().into(), jams, KERNEL, &hot, false)
-        .await
-        .map_err(|_| NockAppError::OtherError)?;
+    let kernel = Kernel::load_with_hot_state_huge(
+        snap.path().into(),
+        jams,
+        KERNEL,
+        &hot,
+        false,
+    )
+    .await
+    .map_err(|_| NockAppError::OtherError)?;
 
     let arc = Arc::new(kernel);
     STARK_KERNEL.set(arc.clone()).ok();
@@ -202,6 +208,7 @@ pub fn create_mining_driver(
             }
 
             // 7) Driver event loop: handle candidate pokes
+            let mut listener = listener;
             loop {
                 let effect = listener.next_effect().await?;
                 if let Ok(cell) = unsafe { effect.root().as_cell() } {
@@ -238,8 +245,7 @@ fn start_mining_threads(
         thread::Builder::new()
             .name(format!("miner-{}", i))
             .spawn(move || {
-                let rt = Runtime::new().expect("tokio RT");
-                rt.block_on(async move {
+                executor::block_on(async move {
                     info!("Miner thread {} up", i);
                     loop {
                         if !active.load(Ordering::SeqCst) {
@@ -258,15 +264,13 @@ fn start_mining_threads(
                             .flatten()
                         };
                         if let Some(cand) = maybe {
-                            if let Err(e) = attempt_mining_cycle(&thread_handle, &kernel, cand).await {
-                                warn!("Thread {} error: {}", i, e);
-                                tokio::time::sleep(Duration::from_millis(MINING_RETRY_DELAY_MS)).await;
-                            }
+                            let _ = attempt_mining_cycle(&thread_handle, &kernel, cand).await;
                         }
+                        tokio::time::sleep(Duration::from_millis(MINING_RETRY_DELAY_MS)).await;
                     }
                 });
             })
-            .expect("spawn thread");
+            .expect("failed to spawn mining thread");
     }
 }
 
@@ -284,7 +288,7 @@ async fn attempt_mining_cycle(
     for effect in effects.to_vec() {
         if let Ok(c) = unsafe { effect.root().as_cell() } {
             if c.head().eq_bytes("command") {
-                handle.poke(MiningWire::Mined.to_wire(), effect).await?;
+                let _ = handle.poke(MiningWire::Mined.to_wire(), effect).await;
                 info!("Mined block submitted");
                 break;
             }
