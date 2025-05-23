@@ -36,7 +36,7 @@ termcolor.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-test.workspace = true
-
+uuid.workspace = true
 zkvm-jetpack.workspace = true
 
 [build-dependencies]
