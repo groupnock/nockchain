@@ -27,9 +27,6 @@ path = "crates/hoonc"
 [workspace.dependencies.nockapp]
 path = "crates/nockapp"
 
-[workspace.dependencies.assert_no_alloc]
-path = "crates/nockvm/rust/assert_no_alloc"
-
 [workspace.dependencies.ibig]
 path = "crates/nockvm/rust/ibig"
 

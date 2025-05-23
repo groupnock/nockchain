@@ -217,8 +217,31 @@ impl NockApp {
         });
         // TODO: Stop using the task tracker for user code?
         self.tasks.spawn(fut);
-
         debug!("Added IO driver");
+    }
+
+    /// Assume at-least-once processing and track the state necessary to know whether
+    /// all critical IO actions have been performed correctly or not from the jammed state.
+    #[tracing::instrument(skip(self, driver))]
+    pub async fn add_io_driver_(
+        &mut self,
+        driver: IODriverFn,
+    ) -> tokio::sync::mpsc::Sender<IOAction> {
+        let io_sender = self.action_channel_sender.clone();
+        let effect_sender = self.effect_broadcast.clone();
+        let effect_receiver = Mutex::new(self.effect_broadcast.subscribe());
+        let exit = self.exit.clone();
+        let fut = driver(NockAppHandle {
+            io_sender,
+            effect_sender,
+            effect_receiver,
+            exit,
+        });
+        // TODO: Stop using the task tracker for user code?
+        self.tasks.spawn(fut);
+        let io_sender = self.action_channel_sender.clone();
+        debug!("Added IO driver");
+        io_sender
     }
 
     /// Purely for testing purposes (injecting delays) for now.

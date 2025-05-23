@@ -15,8 +15,8 @@
 |%
 ::    $key: public or private key
 ::
-::  a public key is generated from a private key and +cc (chain code).
-::  pub contains the base58 encoded version of the cheetah curve point
+::   both private and public keys are in serialized cheetah point form
+::   they MUST be converted to base58 for export.
 ::
 +$  key
   $~  [%pub p=*@ux]
@@ -160,7 +160,8 @@
       [%derive-child key-type=?(%pub %prv) i=@ label=(unit @t)]
       [%import-keys keys=(list (pair trek meta))]
       [%export-keys ~]
-      [%import-master-pubkey key=@t cc=@t]           ::  base58-encoded pubkey + chain code
+      [%export-master-pubkey ~]
+      [%import-master-pubkey =coil]                    ::  base58-encoded pubkey + chain code
       [%make-tx dat=draft]
       [%list-notes-by-pubkey pubkey=@t]                ::  base58-encoded pubkey
       $:  %simple-spend
@@ -1026,6 +1027,7 @@
       %update-block          (do-update-block cause)
       %import-keys           (do-import-keys cause)
       %export-keys           (do-export-keys cause)
+      %export-master-pubkey  (do-export-master-pubkey cause)
       %import-master-pubkey  (do-import-master-pubkey cause)
       %gen-master-privkey    (do-gen-master-privkey cause)
       %gen-master-pubkey     (do-gen-master-pubkey cause)
@@ -1310,24 +1312,52 @@
         [%exit 0]
     ==
   ::
-  ++  do-import-master-pubkey
+  ++  do-export-master-pubkey
     |=  =cause
-    ?>  ?=(%import-master-pubkey -.cause)
-    %-  (debug "import-master-pubkey: {<key.cause>}")
-    =/  c=coil  [%coil [%pub (de:base58:wrap (trip key.cause))] (de:base58:wrap (trip cc.cause))]
-    =/  cor  (from-public:s10 [p.key.c cc.c])
-    =/  master-pubkey-coil=coil  [%coil [%pub public-key] chain-code]:cor
-    =.  master.state  (some master-pubkey-coil)
-    =/  label  `(crip "master-public-{<(end [3 4] public-key:cor)>}")
-    %-  (debug "Imported master public key: {<public-key:cor>}")
-    =.  keys.state  (key:put:v master-pubkey-coil ~ label)
+    ?>  ?=(%export-master-pubkey -.cause)
+    %-  (debug "import-master-pubkey")
+    ?~  master.state
+      ~&  "wallet warning: no master keys available for export"
+      [[%exit 0]~ state]
+    =/  master-coil=coil  ~(master get:v %pub)
+    ?.  ?=(%pub -.key.master-coil)
+      ~&  "wallet fatal: master pubkey malformed"
+      [[%exit 0]~ state]
+    =/  dat-jam=@  (jam master-coil)
+    =/  key-b58=tape  (en:base58:wrap p.key.master-coil)
+    =/  cc-b58=tape  (en:base58:wrap cc.master-coil)
     :_  state
     :~  :-  %markdown
         %-  crip
         """
-        ## master public key
+        ## exported master public key:
 
-        {<public-key:cor>}
+        - pubkey: {key-b58}
+        - chaincode: {cc-b58}
+
+        """
+        [%exit 0]
+        [%file %write 'master-pubkey.export' dat-jam]
+    ==
+  ::
+  ++  do-import-master-pubkey
+    |=  =cause
+    ?>  ?=(%import-master-pubkey -.cause)
+    %-  (debug "import-master-pubkey: {<coil.cause>}")
+    =/  master-pubkey-coil=coil  coil.cause
+    =.  master.state  (some master-pubkey-coil)
+    =/  label  `(crip "master-public-{<(end [3 4] p.key.master-pubkey-coil)>}")
+    =.  keys.state  (key:put:v master-pubkey-coil ~ label)
+    =/  key-b58=tape  (en:base58:wrap p.key.master-pubkey-coil)
+    =/  cc-b58=tape  (en:base58:wrap cc.master-pubkey-coil)
+    :_  state
+    :~  :-  %markdown
+        %-  crip
+        """
+        ## imported master public key:
+
+            - pubkey: {key-b58}
+            - chaincode: {cc-b58}
         """
         [%exit 0]
     ==
@@ -1444,7 +1474,7 @@
         """
         ## master public key
 
-        {(en:base58:wrap p.key.meta)}
+          {(en:base58:wrap p.key.meta)}
         """
         [%exit 0]
     ==

@@ -935,11 +935,6 @@
 ::
 ::  This is a dummy arm which is only here so lib/stark/prover.hoon can use it as its parent core.
 ::  Without it, jets won't work in that file.
-::
-::  !!!!!!!
-::  DONT RELEASE THIS IN THE OPEN SOURCE VERSION
-::  IT IS ALPHA FOR HOW TO GET JETS TO WORK
-::  !!!!!!!
 ++  stark-engine-jet-hook
   ~/  %stark-engine-jet-hook
   |=  n=@

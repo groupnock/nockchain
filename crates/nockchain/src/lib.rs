@@ -341,6 +341,11 @@ fn load_keypair(keypair_path: &Path, force_new: bool) -> Result<Keypair, Box<dyn
         let keypair_bytes = std::fs::read(keypair_path)?;
         let keypair = libp2p::identity::Keypair::from_protobuf_encoding(&keypair_bytes[..])?;
         let peer_id = keypair.public().to_peer_id();
+        let pubkey_path = keypair_path.with_extension(PEER_ID_FILE_EXTENSION);
+        if !pubkey_path.exists() {
+            info!("Writing pubkey to {pubkey_path:?}");
+            std::fs::write(pubkey_path, peer_id.to_base58())?;
+        }
         info!("Loaded identity as peer {peer_id}");
         Ok(keypair)
     } else {
