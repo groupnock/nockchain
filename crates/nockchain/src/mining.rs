@@ -10,7 +10,7 @@ use nockapp::nockapp::wire::{Wire, WireRepr};
 use nockapp::nockapp::NockAppError;
 use nockapp::noun::slab::NounSlab;
 use nockapp::noun::{AtomExt, NounExt};
-use nockvm::noun::{Atom, Cell, D, T, Noun};
+use nockvm::noun::{Atom, D, T, Noun};
 use nockvm_macros::tas;
 
 #[derive(Debug, Error)]
@@ -127,9 +127,9 @@ impl MiningCandidate {
         let parent_hash_atom = tail_cell.tail().as_atom().map_err(|_| MiningError::MiningFailure)?;
 
         Ok(MiningCandidate {
-            block_number: block_num_atom.as_u64(),
-            difficulty: difficulty_atom.as_u64(),
-            parent_hash: parent_hash_atom.as_bytes().to_vec(),
+            block_number: block_num_atom.as_u64()?,
+            difficulty: difficulty_atom.as_u64()?,
+            parent_hash: parent_hash_atom.as_ne_bytes().to_vec(),
         })
     }
 }
@@ -209,7 +209,7 @@ async fn enable_mining(
 }
 
 async fn mine_candidate(
-    handle: NockAppHandle,
+    handle: Arc<NockAppHandle>,
     candidate: MiningCandidate,
 ) -> Result<(), MiningError> {
     let cores = num_cpus::get();
@@ -244,14 +244,14 @@ async fn mine_candidate(
 
     if let Some(nonce) = rx.recv().await {
         debug!("Found valid nonce: {}", nonce);
-        submit_solution(handle, nonce).await?;
+        submit_solution(Arc::clone(&handle), nonce).await?;
     }
 
     Ok(())
 }
 
 async fn submit_solution(
-    handle: NockAppHandle,
+    handle: Arc<NockAppHandle>,
     nonce: u64,
 ) -> Result<(), MiningError> {
     let mut slab = NounSlab::new();
@@ -293,7 +293,7 @@ fn handle_mining_effect(
         };
 
         tasks.spawn(async move {
-            mine_candidate(handle.as_ref().clone(), candidate).await
+            mine_candidate(Arc::clone(&handle), candidate).await
         });
     }
     
@@ -357,7 +357,7 @@ pub fn create_mining_driver(
                         match effect_res {
                             Ok(effect_slab) => {
                                 let effect_noun = effect_slab.root();
-                                handle_mining_effect(Arc::clone(&handle), effect_noun, &mut tasks)?
+                                handle_mining_effect(Arc::clone(&handle), *effect_noun, &mut tasks)?
                             },
                             Err(e) => {
                                 warn!("Error receiving effect: {:?}", e);
