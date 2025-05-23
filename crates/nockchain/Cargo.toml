@@ -38,7 +38,6 @@ tracing.workspace = true
 tracing-test.workspace = true
 uuid.workspace = true
 zkvm-jetpack.workspace = true
-
 [build-dependencies]
 vergen = { workspace = true, features = [
     "build",
