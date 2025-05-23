@@ -5,6 +5,13 @@ publish = false
 version.workspace = true
 edition.workspace = true
 
+[package]
+name = "nockchain"
+build = "build.rs"
+publish = false
+version.workspace = true
+edition.workspace = true
+
 [dependencies]
 hoonc.workspace = true
 kernels = { workspace = true, features = ["dumb", "miner"] }
@@ -38,6 +45,10 @@ tracing.workspace = true
 tracing-test.workspace = true
 
 zkvm-jetpack.workspace = true
+
+# required for the new multithreaded mining driver
+once_cell = "1.18"
+num_cpus  = "1.17"
 
 [build-dependencies]
 vergen = { workspace = true, features = [
