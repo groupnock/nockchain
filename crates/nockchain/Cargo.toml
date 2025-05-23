@@ -1,24 +1,28 @@
-[package]
-name = "nockchain"
-build = "build.rs"
-publish = false
-version.workspace = true
-edition.workspace = true
+[workspace]
+members = [
+    "crates/nockchain",
+    # add other crates if needed
+]
 
-[dependencies]
-hoonc.workspace = true
-kernels = { workspace = true, features = ["dumb", "miner"] }
-nockapp.workspace = true
-nockchain-bitcoin-sync.workspace = true
-nockvm.workspace = true
-nockvm_macros.workspace = true
-
-bitcoincore-rpc.workspace = true
-bs58.workspace = true
-clap.workspace = true
-equix.workspace = true
-futures.workspace = true
-libp2p = { workspace = true, features = [
+[workspace.dependencies]
+uuid = "1.8"
+# also add any other missing dependencies from your inner crate
+tempfile = "3"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+hoonc = { path = "crates/hoonc" } # if it's a local crate
+kernels = { path = "crates/kernels" } # adjust as needed
+nockapp = { path = "crates/nockapp" }
+nockvm = { path = "crates/nockvm" }
+nockvm_macros = { path = "crates/nockvm_macros" }
+nockchain-bitcoin-sync = { path = "crates/nockchain-bitcoin-sync" }
+nockchain-libp2p-io = { path = "crates/nockchain-libp2p-io" }
+equix = { path = "crates/equix" }
+bs58 = "0.5"
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+bitcoincore-rpc = "0.17"
+libp2p = { version = "0.52", features = [
     "ping",
     "kad",
     "identify",
@@ -28,22 +32,9 @@ libp2p = { workspace = true, features = [
     "tokio",
     "macros",
     "request-response",
-    "cbor",
+    "cbor"
 ] }
-nockchain-libp2p-io.workspace = true
-tempfile = { workspace = true }
-termcolor.workspace = true
-tokio = { workspace = true, features = ["full"] }
-tracing.workspace = true
-tracing-test.workspace = true
-uuid.workspace = true
-zkvm-jetpack.workspace = true
-[build-dependencies]
-vergen = { workspace = true, features = [
-    "build",
-    "cargo",
-    "git",
-    "gitcl",
-    "rustc",
-    "si",
-] }
+termcolor = "1.1"
+tracing-test = "0.2"
+zkvm-jetpack = { path = "crates/zkvm-jetpack" }
+vergen = { version = "8", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
