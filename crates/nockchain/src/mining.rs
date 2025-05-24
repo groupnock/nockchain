@@ -1,5 +1,4 @@
-# Writing the fully patched and translated Rust code to a file for user download
-code = r'''use std::str::FromStr;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
