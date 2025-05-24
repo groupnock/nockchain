@@ -84,7 +84,7 @@ impl FromStr for MiningKeyConfig {
     }
 }
 
-/// A fixed-size memory pool with periodic cleanup and shrink capability
+/// A fixed-size memory pool with cleanup and shrink capability
 pub struct MemoryPool {
     blocks: Vec<Vec<u8>>,
     active_blocks: AtomicUsize,
@@ -256,45 +256,30 @@ impl PerformanceMonitor {
     pub fn report(&self) -> String {
         let uptime = self.start_time.elapsed();
         let proofs = self.proof_count.load(Ordering::Relaxed);
-        let errs = self.error_count.load(Ordering::Relaxed);
-        let succ = self.success_count.load(Ordering::Relaxed);
+        let errs   = self.error_count.load(Ordering::Relaxed);
+        let succ   = self.success_count.load(Ordering::Relaxed);
         let avg_hash = if self.hash_count.load(Ordering::Relaxed) > 0 {
             self.hash_time_ns.load(Ordering::Relaxed) as f64
                 / self.hash_count.load(Ordering::Relaxed) as f64
         } else { 0.0 };
-        let allocs = self.alloc_count.load(Ordering::Relaxed);
-        let frees  = self.free_count.load(Ordering::Relaxed);
-        let leaks  = allocs.saturating_sub(frees);
-        let usage  = self.thread_usage_pct.load(Ordering::Relaxed);
 
-        let mut s = format!(
-            "Uptime: {:?}\\nProofs: {}\\nSuccess: {}\\nErrors: {}\\nAvg hash time: {:.2} ns\\nMem allocs: {}\\nMem frees: {}\\nMem leak: {}\\nThread use: {}%\\n",
-            uptime, proofs, succ, errs, avg_hash, allocs, frees, leaks, usage
-        );
-
-        s.push_str("Error types:\\n");
-        for (k,v) in self.error_types.lock().unwrap().iter() {
-            s.push_str(&format!("- {}: {}\\n", k, v));
-        }
-        s.push_str("Resource usage:\\n");
-        for (k,v) in self.resource_usage.lock().unwrap().iter() {
-            s.push_str(&format!("- {}: {}\\n", k, v));
-        }
-
-        s
+        format!(
+            "Uptime: {:?}\nProofs: {}\nSuccess: {}\nErrors: {}\nAvg hash: {:.2} ns\n",
+            uptime, proofs, succ, errs, avg_hash
+        )
     }
 }
 
-/// Manages mining threads, resources, retries, shutdown
+/// Manages mining threads, resources, retries, and shutdown
 pub struct MiningManager {
     pub threads: usize,
     pub runtime: Runtime,
     pub monitor: Arc<PerformanceMonitor>,
     pub retries: usize,
     pub retry_delay: Duration,
-    pub pool_size_mb: usize,
+    pub pool_mb: usize,
     pub shutting_down: Arc<AtomicBool>,
-    pub pool_cleanup: Duration,
+    pub cleanup_interval: Duration,
     pub shrink_thresh: f64,
     pub tasks: Arc<Mutex<HashMap<String, Instant>>>,
     pub limits: Arc<Mutex<HashMap<String,u64>>>,
@@ -304,27 +289,25 @@ pub struct MiningManager {
 impl MiningManager {
     pub fn new(cfg: Option<&NockchainCli>) -> Self {
         let threads = cfg.and_then(|c| Some(c.mining_threads)).filter(|&n| n>0).unwrap_or(15);
-        let rt = Runtime::new().expect("Tokio runtime");
-        let mon = Arc::new(PerformanceMonitor::new(
-            cfg.map(|c| c.mining_report_interval).unwrap_or(60)
-        ));
+        let rt = Runtime::new().unwrap();
+        let mon = Arc::new(PerformanceMonitor::new(cfg.map(|c| c.mining_report_interval).unwrap_or(60)));
         let retries = cfg.map(|c| c.mining_max_retries).unwrap_or(3);
         let retry_delay = Duration::from_secs(cfg.map(|c| c.mining_retry_delay).unwrap_or(1));
-        let pool_size_mb = cfg.map(|c| c.mining_memory_pool).unwrap_or(8192);
-        let pool_cl = Duration::from_secs(cfg.map(|c| c.mining_cleanup_interval).unwrap_or(300));
+        let pool_mb = cfg.map(|c| c.mining_memory_pool).unwrap_or(8192);
+        let cleanup = Duration::from_secs(cfg.map(|c| c.mining_cleanup_interval).unwrap_or(300));
         let shrink = cfg.map(|c| c.mining_memory_shrink_threshold).unwrap_or(0.5);
         let to = Duration::from_secs(30);
 
         let mut lim = HashMap::new();
-        lim.insert("mem_blocks".into(), pool_size_mb as u64);
+        lim.insert("mem_blocks".into(), pool_mb as u64);
         lim.insert("hashes".into(), 10000);
         lim.insert("proofs".into(), 1000);
 
         Self {
             threads, runtime: rt, monitor: mon,
-            retries, retry_delay, pool_size_mb,
+            retries, retry_delay, pool_mb,
             shutting_down: Arc::new(AtomicBool::new(false)),
-            pool_cleanup: pool_cl, shrink_thresh: shrink,
+            cleanup_interval: cleanup, shrink_thresh: shrink,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             limits: Arc::new(Mutex::new(lim)),
             task_timeout: to,
@@ -334,67 +317,69 @@ impl MiningManager {
     pub fn track(&self, id: String) {
         self.tasks.lock().unwrap().insert(id, Instant::now());
     }
-    pub fn timed_out(&self,id:&str)->bool {
-        if let Some(start)=self.tasks.lock().unwrap().get(id) {
-            start.elapsed()>self.task_timeout
+    pub fn timed_out(&self, id: &str) -> bool {
+        if let Some(start) = self.tasks.lock().unwrap().get(id) {
+            start.elapsed() > self.task_timeout
         } else { false }
     }
-    pub fn remove(&self,id:&str){ self.tasks.lock().unwrap().remove(id); }
-    pub fn limit_ok(&self,name:&str,amt:u64)->bool {
-        if let Some(&l)=self.limits.lock().unwrap().get(name) {
-            let u=self.monitor.resource_usage.lock().unwrap().get(name).cloned().unwrap_or(0);
-            u+amt<=l
+    pub fn remove(&self, id: &str) {
+        self.tasks.lock().unwrap().remove(id);
+    }
+    pub fn limit_ok(&self, name: &str, amt: u64) -> bool {
+        if let Some(&l) = self.limits.lock().unwrap().get(name) {
+            let u = *self.monitor.resource_usage.lock().unwrap().get(name).unwrap_or(&0);
+            u + amt <= l
         } else { true }
     }
-    pub fn shutdown(&self){ self.shutting_down.store(true,Ordering::Relaxed) }
+    pub fn shutdown(&self) { self.shutting_down.store(true, Ordering::Relaxed); }
 }
 
-/// Builds the I/O driver for nockapp
+/// Creates the mining I/O driver for nockapp
 pub fn create_mining_driver(
     cfg: Option<Vec<MiningKeyConfig>>,
     enable: bool,
     init_tx: Option<oneshot::Sender<()>>,
     cli: Option<&NockchainCli>,
-)->IODriverFn {
+) -> IODriverFn {
     Box::new(move |mut handle| Box::pin(async move {
         if cfg.is_none() {
-            enable_mining(&handle,false).await?;
-            if let Some(t)=init_tx { let _=t.send(());}
+            enable_mining(&handle, false).await?;
+            if let Some(t) = init_tx { let _ = t.send(()); }
             return Ok(());
         }
-        let keys=cfg.unwrap();
-        if keys.len()==1 && keys[0].share==1&&keys[0].m==1 {
-            set_mining_key(&handle,keys[0].keys[0].clone()).await?;
+        let keys = cfg.unwrap();
+        if keys.len() == 1 && keys[0].share==1 && keys[0].m==1 {
+            set_mining_key(&handle, keys[0].keys[0].clone()).await?;
         } else {
-            set_mining_key_advanced(&handle,keys).await?;
+            set_mining_key_advanced(&handle, keys).await?;
         }
-        enable_mining(&handle,enable).await?;
-        if let Some(t)=init_tx { let _=t.send(());}
-        if !enable {return Ok(());}
+        enable_mining(&handle, enable).await?;
+        if let Some(t) = init_tx { let _ = t.send(()); }
+        if !enable { return Ok(()); }
 
-        let mut next:Option<NounSlab>=None;
-        let mut set=JoinSet::new();
+        let mut next: Option<NounSlab> = None;
+        let mut set = JoinSet::new();
         loop {
             tokio::select! {
-                eff=handle.next_effect()=> {
-                    let e=eff?;
-                    let c=unsafe{e.root().as_cell()?};
+                eff = handle.next_effect() => {
+                    let e = eff?;
+                    let c = unsafe{ e.root().as_cell()? };
                     if c.head().eq_bytes("mine") {
-                        let mut s=NounSlab::new();
-                        s.copy_into(c.tail());
-                        if !set.is_empty(){ next=Some(s); }
+                        let mut slab = NounSlab::new();
+                        slab.copy_into(c.tail());
+                        if !set.is_empty() { next = Some(slab); }
                         else {
-                            let (h1,h2)=handle.dup();
-                            handle=h1;
-                            set.spawn(mining_attempt(s,h2,cli));
+                            let (h1,h2) = handle.dup();
+                            handle = h1;
+                            set.spawn(mining_attempt(slab, h2, cli));
                         }
                     }
                 }
-                _= set.join_next(),if !set.is_empty()=> {
-                    if let Some(s)=next.take() {
-                        let (h1,h2)=handle.dup();
-                        handle=h1;
-                        set.spawn(mining_attempt(s,h2,cli));
+                _ = set.join_next(), if !set.is_empty() => {
+                    if let Some(slab) = next.take() {
+                        let (h1,h2) = handle.dup();
+                        handle = h1;
+                        set.spawn(mining_attempt(slab, h2, cli));
                     }
                 }
             }
@@ -402,61 +387,67 @@ pub fn create_mining_driver(
     }))
 }
 
-/// Executes one mining attempt
+/// Performs one mining attempt on a candidate slab
 pub async fn mining_attempt(
     candidate: NounSlab,
     mut handle: NockAppHandle,
-    cli: Option<&NockchainCli>
+    cli: Option<&NockchainCli>,
 ) {
-    let mgr=MiningManager::new(cli);
-    let pool=Arc::new(Mutex::new(MemoryPool::new(
-        mgr.pool_size_mb*1024*1024,
+    let mgr = MiningManager::new(cli);
+    let pool = Arc::new(Mutex::new(MemoryPool::new(
+        mgr.pool_mb*1024*1024,
         mgr.threads,
-        mgr.pool_cleanup,
+        mgr.cleanup_interval,
         mgr.shrink_thresh,
     )));
-    let dir=tempdir().unwrap();
-    let hot=zkvm_jetpack::hot::produce_prover_hot_state();
-    let jam=JamPaths::new(dir.path());
-    let kernel=Kernel::load_with_hot_state_huge(
-        dir.path().to_path_buf(), jam.clone(), KERNEL, &hot,false
+
+    let dir = tempdir().unwrap();
+    let hot = zkvm_jetpack::hot::produce_prover_hot_state();   
+    let jam = JamPaths::new(dir.path());
+    let kernel = Kernel::load_with_hot_state_huge(
+        dir.path().to_path_buf(), jam.clone(), KERNEL, &hot, false
     ).await.unwrap();
 
     (0..mgr.threads).into_par_iter().for_each(|_| {
         if mgr.shutting_down.load(Ordering::Relaxed) { return; }
         #[cfg(target_os="linux")]
-        unsafe{
-            let p=sched_param{sched_priority:99};
-            let _=sched_setscheduler(0,SCHED_RR,&p);
+        unsafe {
+            let p = sched_param { sched_priority: 99 };
+            let _ = sched_setscheduler(0, SCHED_RR, &p);
         }
-        let mut r=0;
-        while r<mgr.retries && !mgr.shutting_down.load(Ordering::Relaxed) {
-            let block={ let mut p=pool.lock().unwrap();
+        let mut r = 0;
+        while r < mgr.retries && !mgr.shutting_down.load(Ordering::Relaxed) {
+            let block = {
+                let mut p = pool.lock().unwrap();
                 p.get_block().unwrap_or_default()
             };
             mgr.monitor.record_alloc();
             mgr.monitor.record_resource("mem_blocks",1);
-            let effects=futures::executor::block_on(
-                kernel.poke(MiningWire::Candidate.to_wire(),candidate.clone())
-            ).unwrap();
+            let effects = mgr.runtime.block_on(kernel.poke(
+                MiningWire::Candidate.to_wire(), candidate.clone()
+            )).unwrap();
             for eff in effects.to_vec() {
-                let c=unsafe{eff.root().as_cell().unwrap()};
+                let c = unsafe{ eff.root().as_cell().unwrap() };
                 if c.head().eq_bytes("command") {
-                    futures::executor::block_on(async{
-                        handle.poke(MiningWire::Mined.to_wire(),eff).await.ok();
+                    mgr.runtime.block_on(async {
+                        handle.poke(MiningWire::Mined.to_wire(), eff).await.ok();
                     });
                     mgr.monitor.record_success();
                 }
             }
-            { let mut p=pool.lock().unwrap(); p.return_block(block); }
+            {
+                let mut p = pool.lock().unwrap();
+                p.return_block(block);
+            }
             mgr.monitor.record_free();
             mgr.monitor.record_resource("mem_blocks",1);
-            r+=1;
+            r += 1;
+            std::thread::sleep(mgr.retry_delay);
         }
     });
 
     if mgr.monitor.should_report() {
-        info!("{}",mgr.monitor.report());
+        info!("{}", mgr.monitor.report());
     }
     pool.lock().unwrap().shutdown();
     mgr.shutdown();
@@ -464,52 +455,53 @@ pub async fn mining_attempt(
 
 #[instrument(skip(handle))]
 async fn set_mining_key(
-    handle:&NockAppHandle, pubkey:String
-)->Result<PokeResult, NockAppError>{
-    let mut slab=NounSlab::new();
-    let cmd=Atom::from_value(&mut slab,"command").unwrap();
-    let sk=Atom::from_value(&mut slab,"set-mining-key").unwrap();
-    let pk=Atom::from_value(&mut slab,&pubkey).unwrap();
-    let poke=T(&mut slab,&[D(cmd.as_bytes()),sk.as_noun(),pk.as_noun()]);
+    handle: &NockAppHandle,
+    pubkey: String,
+) -> Result<PokeResult, NockAppError> {
+    let mut slab = NounSlab::new();
+    let cmd = Atom::from_value(&mut slab, "command").unwrap();
+    let sk  = Atom::from_value(&mut slab, "set-mining-key").unwrap();
+    let pk  = Atom::from_value(&mut slab, &pubkey).unwrap();
+    let poke = T(&mut slab, &[D(cmd.as_bytes()), sk.as_noun(), pk.as_noun()]);
     slab.set_root(poke);
-    handle.poke(MiningWire::SetPubKey.to_wire(),slab).await
+    handle.poke(MiningWire::SetPubKey.to_wire(), slab).await
 }
 
 #[instrument(skip(handle))]
 async fn set_mining_key_advanced(
-    handle:&NockAppHandle, configs:Vec<MiningKeyConfig>
-)->Result<PokeResult, NockAppError>{
-    let mut slab=NounSlab::new();
-    let cmd=Atom::from_value(&mut slab,"command").unwrap();
-    let adv=Atom::from_value(&mut slab,"set-mining-key-advanced").unwrap();
-    let mut list=D(0);
+    handle: &NockAppHandle,
+    configs: Vec<MiningKeyConfig>
+) -> Result<PokeResult, NockAppError> {
+    let mut slab = NounSlab::new();
+    let cmd = Atom::from_value(&mut slab, "command").unwrap();
+    let adv = Atom::from_value(&mut slab, "set-mining-key-advanced").unwrap();
+
+    let mut list = D(0);
     for cfg in configs {
-        let mut kl=D(0);
+        let mut kl = D(0);
         for k in cfg.keys {
-            let a=Atom::from_value(&mut slab,&k).unwrap();
-            kl=T(&mut slab,&[a.as_noun(),kl]);
+            let a = Atom::from_value(&mut slab, &k).unwrap();
+            kl = T(&mut slab, &[a.as_noun(), kl]);
         }
-        let tup=T(&mut slab,&[D(cfg.share),D(cfg.m),kl]);
-        list=T(&mut slab,&[tup,list]);
+        let tup = T(&mut slab, &[D(cfg.share), D(cfg.m), kl]);
+        list = T(&mut slab, &[tup, list]);
     }
-    let poke=T(&mut slab,&[D(cmd.as_bytes()),adv.as_noun(),list]);
+
+    let poke = T(&mut slab, &[D(cmd.as_bytes()), adv.as_noun(), list]);
     slab.set_root(poke);
-    handle.poke(MiningWire::SetPubKey.to_wire(),slab).await
+    handle.poke(MiningWire::SetPubKey.to_wire(), slab).await
 }
 
 #[instrument(skip(handle))]
 async fn enable_mining(
-    handle:&NockAppHandle, enable:bool
-)->Result<PokeResult, NockAppError>{
-    let mut slab=NounSlab::new();
-    let cmd=Atom::from_value(&mut slab,"command").unwrap();
-    let en=Atom::from_value(&mut slab,"enable-mining").unwrap();
-    let flag=D(if enable{0}else{1});
-    let poke=T(&mut slab,&[D(cmd.as_bytes()),en.as_noun(),flag]);
+    handle: &NockAppHandle,
+    enable: bool
+) -> Result<PokeResult, NockAppError> {
+    let mut slab = NounSlab::new();
+    let cmd = Atom::from_value(&mut slab, "command").unwrap();
+    let en  = Atom::from_value(&mut slab, "enable-mining").unwrap();
+    let flag = D(if enable { 0 } else { 1 });
+    let poke = T(&mut slab, &[D(cmd.as_bytes()), en.as_noun(), flag]);
     slab.set_root(poke);
-    handle.poke(MiningWire::Enable.to_wire(),slab).await
-}'''
-with open('/mnt/data/mining.rs', 'w') as f:
-    f.write(code)
-
-
+    handle.poke(MiningWire::Enable.to_wire(), slab).await
+}
