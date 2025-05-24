@@ -58,6 +58,7 @@ path = "crates/nockvm/rust/nockvm_macros"
 path = "crates/zkvm-jetpack"
 
 [workspace.dependencies]
+uuid = "1.8"
 json = "0.12.4"
 lazy_static = "1.4.0"
 libc = "0.2.171"
