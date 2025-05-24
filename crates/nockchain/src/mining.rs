@@ -10,6 +10,8 @@ use tokio::sync::Semaphore;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use std::sync::atomic::AtomicBool;
+use crate::NockchainCli;                       // bring the CLI-config type into scope
+use rayon::iter::IntoParallelIterator;          // so .into_par_iter() works
 
 use kernels::miner::KERNEL;
 use nockapp::kernel::checkpoint::JamPaths;
